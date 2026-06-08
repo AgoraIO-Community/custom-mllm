@@ -81,8 +81,10 @@ https://sensationally-unpeppered-eleanor.ngrok-free.dev
 Your Agora WebSocket URL is:
 
 ```
-wss://sensationally-unpeppered-eleanor.ngrok-free.dev/realtime
+wss://sensationally-unpeppered-eleanor.ngrok-free.dev/realtime?debate_session_id=YOUR-ROOM-ID&side=pro
 ```
+
+Use `side=con` for the con agent. Pass your debate app's existing room/session ID as `debate_session_id`.
 
 Verify through ngrok:
 
@@ -99,7 +101,7 @@ In the debate app (separate repo), set only `mllm.url` — keep `vendor: "xai"`:
   "mllm": {
     "enable": true,
     "vendor": "xai",
-    "url": "wss://YOUR-NGROK-SUBDOMAIN.ngrok-free.dev/realtime",
+    "url": "wss://YOUR-NGROK-SUBDOMAIN.ngrok-free.dev/realtime?debate_session_id=YOUR-ROOM-ID&side=pro",
     "api_key": "any-placeholder",
     "output_modalities": ["audio", "text"],
     "params": {
@@ -126,6 +128,48 @@ When the agent connects, proxy logs should show:
 session.created
 session.upstream_connected
 ws.message ...
+```
+
+---
+
+## Live context injection (`/inject`)
+
+Debate app pushes sanitized tweets to each agent via HTTP side-channel (not through the voice WebSocket).
+
+**1. Discover proxy session IDs for your room:**
+
+```bash
+curl "http://localhost:8081/sessions?debate_session_id=YOUR-ROOM-ID"
+```
+
+**2. Inject pro/con buffers separately:**
+
+```bash
+curl -X POST "http://localhost:8081/inject/PROXY-SESSION-UUID" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "[LIVE X - PRO] @user: tweet...", "trigger_response": false}'
+```
+
+Use `trigger_response: false` for silent inject (agent not interrupted; context applies on next turn).
+
+| Field | Purpose |
+|-------|---------|
+| `debate_session_id` | Your debate room ID (in Agora `mllm.url`) |
+| `side` | `pro` or `con` |
+| `session_id` | Proxy UUID from `GET /sessions` — used in inject URL |
+
+See [spec.md](./spec.md) §6.3 for full inject contract.
+
+**Smoke test script** (spawns pro+con sessions, injects sample tweets):
+
+```bash
+python scripts/smoke_inject.py --spawn --debate-session-id smoke-test-room
+```
+
+If Agora agents are already connected with the same `debate_session_id`, skip `--spawn`:
+
+```bash
+python scripts/smoke_inject.py --debate-session-id YOUR-ROOM-ID
 ```
 
 ---
@@ -163,4 +207,4 @@ docker run -p 8081:8081 --env-file .env custom-xai-mllm
 | 1 | done | Direct xAI smoke test |
 | 2 | done | Transparent WebSocket proxy |
 | 3 | in progress | Agora + ngrok E2E |
-| 4 | pending | `/inject`, Railway deploy |
+| 4 | in progress | `/inject` wired; Railway deploy |

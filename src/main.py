@@ -11,9 +11,10 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
 from src import __version__
+from src.inject import inject_text
 from src.logging import configure_logging, get_logger
 from src.relay import relay_loop
-from src.session import SessionManager
+from src.session import SessionManager, parse_session_scope
 from src.settings import settings
 
 configure_logging()
@@ -34,6 +35,17 @@ def _check_auth(request: Request) -> JSONResponse | None:
     return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
 
+def _session_payload(session) -> dict:
+    return {
+        "session_id": session.session_id,
+        "debate_session_id": session.debate_session_id,
+        "side": session.side,
+        "created_at": session.created_at.isoformat(),
+        "upstream_connected": session.upstream_connected,
+        "model": session.model,
+    }
+
+
 async def health(_: Request) -> JSONResponse:
     return JSONResponse(
         {
@@ -48,28 +60,62 @@ async def list_sessions(request: Request) -> JSONResponse:
     if err := _check_auth(request):
         return err
 
-    return JSONResponse(
-        {
-            "sessions": [
-                {
-                    "session_id": session.session_id,
-                    "created_at": session.created_at.isoformat(),
-                    "upstream_connected": session.upstream_connected,
-                    "model": session.model,
-                }
-                for session in session_manager.list_active()
-            ]
-        }
-    )
+    debate_session_id = request.query_params.get("debate_session_id")
+    sessions = session_manager.list_active(debate_session_id=debate_session_id or None)
+
+    return JSONResponse({"sessions": [_session_payload(session) for session in sessions]})
 
 
 async def inject_session(request: Request) -> JSONResponse:
     if err := _check_auth(request):
         return err
 
+    session_id = request.path_params["session_id"]
+    session = session_manager.get(session_id)
+    if session is None:
+        return JSONResponse({"detail": "Session not found"}, status_code=404)
+
+    if not session.upstream_connected:
+        return JSONResponse({"detail": "Upstream not connected"}, status_code=409)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
+
+    if not isinstance(body, dict):
+        return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
+
+    text = body.get("text")
+    if not text or not isinstance(text, str):
+        return JSONResponse({"detail": "text is required"}, status_code=400)
+
+    role = body.get("role", "user")
+    if not isinstance(role, str):
+        return JSONResponse({"detail": "role must be a string"}, status_code=400)
+
+    trigger_response = bool(body.get("trigger_response", False))
+
+    await inject_text(session, text, role=role, trigger_response=trigger_response)
+
+    log.info(
+        "inject.sent",
+        session_id=session_id,
+        debate_session_id=session.debate_session_id,
+        side=session.side,
+        text_length=len(text),
+        text_preview=text[:50],
+        trigger_response=trigger_response,
+    )
+
     return JSONResponse(
-        {"detail": "Not implemented until Milestone 4"},
-        status_code=501,
+        {
+            "session_id": session_id,
+            "debate_session_id": session.debate_session_id,
+            "side": session.side,
+            "injected": True,
+            "trigger_response": trigger_response,
+        }
     )
 
 
@@ -82,13 +128,37 @@ async def realtime_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1011, reason="XAI_API_KEY not configured")
         return
 
+    debate_session_id, side, scope_error = parse_session_scope(
+        websocket.query_params.get("debate_session_id"),
+        websocket.query_params.get("side"),
+    )
+    if scope_error:
+        await websocket.close(code=1008, reason=scope_error)
+        return
+
+    if debate_session_id and side and session_manager.has_active_scope(debate_session_id, side):
+        await websocket.close(code=1008, reason="Session scope already active")
+        return
+
     model = websocket.query_params.get("model") or settings.xai_model
     session_id = str(uuid4())
 
     await websocket.accept()
 
-    session = await session_manager.create(websocket, model, session_id)
-    log.info("session.created", session_id=session_id, model=model)
+    session = await session_manager.create(
+        websocket,
+        model,
+        session_id,
+        debate_session_id=debate_session_id,
+        side=side,
+    )
+    log.info(
+        "session.created",
+        session_id=session_id,
+        model=model,
+        debate_session_id=debate_session_id,
+        side=side,
+    )
 
     upstream_url = f"wss://api.x.ai/v1/realtime?model={model}"
     upstream_headers = {"Authorization": f"Bearer {settings.xai_api_key}"}

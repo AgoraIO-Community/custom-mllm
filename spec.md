@@ -70,17 +70,38 @@ flowchart TB
 
 ```
 Agora opens: wss://<proxy>/realtime?model=grok-voice-latest
+Optional scope: ?debate_session_id=<appRoomId>&side=pro|con
 Optional auth: Authorization: Bearer <PROXY_AUTH_TOKEN>
 ```
+
+**Session scoping (multi-agent / multi-meeting):**
+
+| Query param | Set by | Purpose |
+|-------------|--------|---------|
+| `debate_session_id` | Debate app (existing room/session ID) | Isolate inject targets per debate room |
+| `side` | Debate app (`pro` or `con`) | Which agent role |
+
+Example URLs:
+
+```
+wss://<proxy>/realtime?debate_session_id=room-abc-123&side=pro
+wss://<proxy>/realtime?debate_session_id=room-abc-123&side=con
+```
+
+Proxy generates its own `session_id` (UUID) per connection — **do not** pass proxy `session_id` in the WebSocket URL. Use `GET /sessions` to map `(debate_session_id, side)` → proxy `session_id` for inject.
+
+**Uniqueness:** reject WS connect with code `1008` if `(debate_session_id, side)` is already active.
 
 **Steps:**
 
 1. Validate `PROXY_AUTH_TOKEN` if set (compare downstream `Authorization` header).
-2. Generate `session_id = uuid4()`.
-3. Register session in `SessionManager`.
-4. Open upstream: `wss://api.x.ai/v1/realtime?model={XAI_MODEL}` with `Authorization: Bearer {XAI_API_KEY}`.
-5. Start two asyncio tasks: `relay_downstream_to_upstream`, `relay_upstream_to_downstream`.
-6. Log `session.created` with `session_id`.
+2. Parse and validate `debate_session_id` + `side` (both optional together; if one is set, both required).
+3. Reject duplicate `(debate_session_id, side)` if already active.
+4. Generate `session_id = uuid4()`.
+5. Register session in `SessionManager` with scope fields.
+6. Open upstream: `wss://api.x.ai/v1/realtime?model={XAI_MODEL}` with `Authorization: Bearer {XAI_API_KEY}`.
+7. Start two asyncio tasks: `relay_downstream_to_upstream`, `relay_upstream_to_downstream`.
+8. Log `session.created` with `session_id`, `debate_session_id`, `side`.
 
 ### 4.2 Upstream connect (Proxy → xAI)
 
@@ -210,13 +231,27 @@ session["audio"]["input"]["transcription"] = {
 
 ### 6.2 `GET /sessions`
 
-List active sessions (for debate app discovery):
+List active sessions (for debate app discovery). Optional filter:
+
+```
+GET /sessions?debate_session_id=room-abc-123
+```
 
 ```json
 {
   "sessions": [
     {
-      "session_id": "a1b2c3d4-...",
+      "session_id": "proxy-uuid-1",
+      "debate_session_id": "room-abc-123",
+      "side": "pro",
+      "created_at": "2026-06-05T12:00:00Z",
+      "upstream_connected": true,
+      "model": "grok-voice-latest"
+    },
+    {
+      "session_id": "proxy-uuid-2",
+      "debate_session_id": "room-abc-123",
+      "side": "con",
       "created_at": "2026-06-05T12:00:00Z",
       "upstream_connected": true,
       "model": "grok-voice-latest"
@@ -225,17 +260,55 @@ List active sessions (for debate app discovery):
 }
 ```
 
-### 6.3 `POST /inject/{session_id}`
+| Field | Owner | Used for |
+|-------|-------|----------|
+| `session_id` | Proxy (UUID) | `POST /inject/{session_id}` |
+| `debate_session_id` | Debate app | Filter sessions per room |
+| `side` | Debate app | `pro` or `con` agent targeting |
+
+### 6.3 `POST /inject/{session_id}` — live context injection
+
+HTTP side-channel for pushing live X/tweet context into an agent session **without** going through the Agora voice WebSocket.
+
+**Who calls it:** Debate app (Next.js server) after polling/sanitizing tweets from the X Search API.
+
+**Targeting flow:**
+
+1. Debate app knows its `debate_session_id` (same ID passed in Agora `mllm.url`).
+2. `GET /sessions?debate_session_id=<id>` → find `side=pro` and `side=con` proxy `session_id`s.
+3. `POST /inject/{session_id}` with pro buffer → pro agent; con buffer → con agent.
+
+```mermaid
+sequenceDiagram
+  participant DebateApp as DebateApp
+  participant XAPI as X_Search_API
+  participant Proxy as MLLM_Proxy
+  participant xAI as xAI_Grok
+
+  DebateApp->>XAPI: GET /2/tweets/search/recent
+  XAPI-->>DebateApp: new tweets
+  DebateApp->>Proxy: GET /sessions?debate_session_id=room-abc
+  Proxy-->>DebateApp: pro + con session_ids
+  DebateApp->>Proxy: POST /inject/{pro_id} pro buffer
+  DebateApp->>Proxy: POST /inject/{con_id} con buffer
+  Proxy->>xAI: conversation.item.create per session
+```
 
 **Request:**
 
 ```json
 {
-  "text": "[LIVE X CONTEXT] Breaking: ...",
+  "text": "[LIVE X - PRO] @user123: Tweet content here...",
   "role": "user",
   "trigger_response": false
 }
 ```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `text` | required | Sanitized tweet or rolling summary from debate app |
+| `role` | `"user"` | Injected as user-context message |
+| `trigger_response` | `false` | `false` = silent inject (no interrupt); `true` = also send `response.create` |
 
 **Behavior:**
 
@@ -254,12 +327,24 @@ List active sessions (for debate app discovery):
 }
 ```
 
-4. If `trigger_response: true`, also send `{"type": "response.create"}` (v2/debug only; default `false`).
-5. Return `200`:
+4. If `trigger_response: true`, also send `{"type": "response.create"}`.
+5. Log `inject.sent` with `session_id`, `debate_session_id`, `side`, `text_length`.
+6. Return `200`:
 
 ```json
-{ "session_id": "...", "injected": true, "trigger_response": false }
+{
+  "session_id": "proxy-uuid-1",
+  "debate_session_id": "room-abc-123",
+  "side": "pro",
+  "injected": true,
+  "trigger_response": false
+}
 ```
+
+**Cross-send prevention:**
+
+- Debate app filters by its own `debate_session_id` and matches `side` before inject.
+- Proxy rejects duplicate `(debate_session_id, side)` WebSocket connects while active.
 
 **Auth (v1):** optional `Authorization: Bearer <PROXY_AUTH_TOKEN>` on HTTP routes.
 
@@ -338,8 +423,9 @@ Standalone script `scripts/smoke_xai.py`:
 
 ### Milestone 4 — Inject + deploy (Day 4–5)
 
-- [ ] `POST /inject/{session_id}` wired
-- [ ] `GET /sessions` for discovery
+- [x] `POST /inject/{session_id}` wired
+- [x] `GET /sessions` with `debate_session_id` + `side` scoping
+- [x] `GET /sessions?debate_session_id=` filter
 - [ ] Railway deploy with `wss://`
 - [ ] Manual inject test while agent is speaking (no interrupt)
 
@@ -372,7 +458,8 @@ custom-xAI-mllm/
 │   └── inject.py
 └── tests/
     ├── test_config_mapper.py
-    └── test_inject.py
+    ├── test_inject.py
+    └── test_inject_route.py
 ```
 
 ---

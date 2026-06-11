@@ -16,6 +16,7 @@ from src.logging import configure_logging, get_logger
 from src.relay import relay_loop
 from src.session import SessionManager, parse_session_scope
 from src.settings import settings
+from src.upstream import resolve_upstream
 
 configure_logging()
 log = get_logger(__name__)
@@ -42,6 +43,7 @@ def _session_payload(session) -> dict:
         "side": session.side,
         "created_at": session.created_at.isoformat(),
         "upstream_connected": session.upstream_connected,
+        "provider": session.provider,
         "model": session.model,
     }
 
@@ -124,10 +126,6 @@ async def realtime_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    if not settings.xai_api_key:
-        await websocket.close(code=1011, reason="XAI_API_KEY not configured")
-        return
-
     debate_session_id, side, scope_error = parse_session_scope(
         websocket.query_params.get("debate_session_id"),
         websocket.query_params.get("side"),
@@ -140,33 +138,46 @@ async def realtime_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="Session scope already active")
         return
 
-    model = websocket.query_params.get("model") or settings.xai_model
+    provider = websocket.query_params.get("provider")
+    try:
+        upstream = resolve_upstream(provider)
+    except ValueError as exc:
+        await websocket.close(code=1011, reason=str(exc))
+        return
+
     session_id = str(uuid4())
 
     await websocket.accept()
 
     session = await session_manager.create(
         websocket,
-        model,
+        upstream.model,
         session_id,
         debate_session_id=debate_session_id,
         side=side,
+        provider=upstream.provider,
     )
     log.info(
         "session.created",
         session_id=session_id,
-        model=model,
+        provider=upstream.provider,
+        model=upstream.model,
         debate_session_id=debate_session_id,
         side=side,
     )
 
-    upstream_url = f"wss://api.x.ai/v1/realtime?model={model}"
-    upstream_headers = {"Authorization": f"Bearer {settings.xai_api_key}"}
-
     try:
-        async with websockets.connect(upstream_url, additional_headers=upstream_headers) as upstream:
-            await session_manager.connect_upstream(session, upstream)
-            log.info("session.upstream_connected", session_id=session_id, upstream_url=upstream_url)
+        async with websockets.connect(
+            upstream.url, additional_headers=upstream.headers
+        ) as upstream_ws:
+            await session_manager.connect_upstream(session, upstream_ws)
+            log.info(
+                "session.upstream_connected",
+                session_id=session_id,
+                provider=upstream.provider,
+                model=upstream.model,
+                upstream_url=upstream.url,
+            )
             await relay_loop(session, log)
     except websockets.InvalidStatus as exc:
         log.error(
@@ -190,6 +201,7 @@ async def lifespan(_: Starlette):
         host=settings.host,
         port=settings.port,
         xai_model=settings.xai_model,
+        openai_model=settings.openai_model,
     )
     yield
     log.info("proxy.shutdown")

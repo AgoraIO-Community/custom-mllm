@@ -43,7 +43,7 @@ async def _hold_session(
     ws_url = (
         f"ws://{base_url}/realtime"
         f"?debate_session_id={debate_session_id}&side={side}"
-        f"&model={settings.xai_model}"
+        f"&provider=xai"
     )
     async with websockets.connect(ws_url, additional_headers=_ws_headers()) as ws:
         await ws.send(

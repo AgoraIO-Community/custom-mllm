@@ -41,6 +41,7 @@ class ProxySession:
     upstream_ws: Any | None = None
     debate_session_id: str | None = None
     side: str | None = None
+    provider: str = "xai"
 
     @property
     def upstream_connected(self) -> bool:
@@ -59,6 +60,7 @@ class SessionManager:
         *,
         debate_session_id: str | None = None,
         side: str | None = None,
+        provider: str = "xai",
     ) -> ProxySession:
         session = ProxySession(
             session_id=session_id,
@@ -66,6 +68,7 @@ class SessionManager:
             model=model,
             debate_session_id=debate_session_id,
             side=side,
+            provider=provider,
         )
         self._sessions[session_id] = session
         return session

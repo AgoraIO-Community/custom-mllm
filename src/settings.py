@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     xai_api_key: str = ""
     xai_model: str = "grok-voice-latest"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-realtime"
     proxy_auth_token: str = ""
     port: int = 8081
     host: str = "0.0.0.0"

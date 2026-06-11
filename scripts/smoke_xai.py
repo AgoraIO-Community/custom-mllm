@@ -28,7 +28,7 @@ def _build_headers(via_proxy: bool) -> dict[str, str]:
 
 def _resolve_url(via_proxy: bool, host: str, port: int) -> str:
     if via_proxy:
-        return f"ws://{host}:{port}/realtime?model={settings.xai_model}"
+        return f"ws://{host}:{port}/realtime?provider=xai"
     return settings.xai_upstream_url
 
 

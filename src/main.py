@@ -11,8 +11,12 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
 from src import __version__
+from src.chat_completions import chat_completions
 from src.inject import inject_text
+from src.kb_get import kb_get
+from src.kb_ingest import kb_ingest
 from src.logging import configure_logging, get_logger
+from src.pipeline import parse_pipeline_mode
 from src.relay import relay_loop
 from src.session import SessionManager, parse_session_scope
 from src.settings import settings
@@ -126,6 +130,11 @@ async def realtime_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
+    pipeline_error = parse_pipeline_mode(websocket.query_params.get("pipeline_mode"), "mllm")
+    if pipeline_error:
+        await websocket.close(code=1008, reason=pipeline_error)
+        return
+
     debate_session_id, side, scope_error = parse_session_scope(
         websocket.query_params.get("debate_session_id"),
         websocket.query_params.get("side"),
@@ -211,6 +220,9 @@ routes = [
     Route("/health", health, methods=["GET"]),
     Route("/sessions", list_sessions, methods=["GET"]),
     Route("/inject/{session_id}", inject_session, methods=["POST"]),
+    Route("/kb", kb_get, methods=["GET"]),
+    Route("/kb/ingest", kb_ingest, methods=["POST"]),
+    Route("/v1/chat/completions", chat_completions, methods=["POST"]),
     WebSocketRoute("/realtime", realtime_ws),
 ]
 

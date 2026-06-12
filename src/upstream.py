@@ -39,3 +39,31 @@ def resolve_upstream(provider: str | None) -> UpstreamConfig:
         )
 
     raise ValueError(f"Unknown provider: {provider}")
+
+
+def resolve_chat_upstream(provider: str | None, model: str | None) -> UpstreamConfig:
+    normalized = (provider or "").lower()
+
+    if normalized == "openai":
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY not configured")
+        resolved_model = model or settings.openai_chat_model
+        return UpstreamConfig(
+            provider="openai",
+            url="https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            model=resolved_model,
+        )
+
+    if normalized == "xai":
+        if not settings.xai_api_key:
+            raise ValueError("XAI_API_KEY not configured")
+        resolved_model = model or settings.xai_chat_model
+        return UpstreamConfig(
+            provider="xai",
+            url="https://api.x.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.xai_api_key}"},
+            model=resolved_model,
+        )
+
+    raise ValueError(f"Unknown provider: {provider}")

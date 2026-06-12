@@ -42,7 +42,7 @@ async def _hold_session(
 ) -> None:
     ws_url = (
         f"ws://{base_url}/realtime"
-        f"?debate_session_id={debate_session_id}&side={side}"
+        f"?pipeline_mode=mllm&debate_session_id={debate_session_id}&side={side}"
         f"&provider=xai"
     )
     async with websockets.connect(ws_url, additional_headers=_ws_headers()) as ws:

@@ -5,6 +5,7 @@ from starlette.responses import JSONResponse
 
 from src.kb import kb_store
 from src.logging import get_logger
+from src.proxy_auth import unauthorized_response, verify_bearer
 from src.session import parse_session_scope
 
 log = get_logger(__name__)
@@ -36,6 +37,12 @@ async def kb_ingest(request: Request) -> JSONResponse:
     debate_session_id = body.get("debate_session_id")
     if not debate_session_id or not isinstance(debate_session_id, str):
         return JSONResponse({"detail": "debate_session_id is required"}, status_code=400)
+
+    if not verify_bearer(
+        request.headers.get("authorization", ""),
+        debate_session_id=debate_session_id,
+    ):
+        return unauthorized_response()
 
     _, _, scope_error = parse_session_scope(debate_session_id, "pro")
     if scope_error:

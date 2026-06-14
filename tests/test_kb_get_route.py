@@ -3,6 +3,8 @@ from httpx import ASGITransport, AsyncClient
 
 from src.kb import kb_store
 from src.main import app
+from src.proxy_auth import derive_session_token, format_bearer
+from src.settings import settings
 
 
 @pytest.fixture(autouse=True)
@@ -109,3 +111,43 @@ async def test_kb_ingest_then_get_reflects_dedupe():
     data = response.json()
     assert len(data["pro"]) == 1
     assert data["pro"][0]["text"] == "updated"
+
+
+@pytest.fixture
+def hmac_secret(monkeypatch):
+    monkeypatch.setattr(settings, "proxy_master_secret", "test-secret-for-cross-check")
+    yield
+
+
+def _session_bearer(debate_session_id: str) -> dict[str, str]:
+    return {"Authorization": format_bearer(derive_session_token(debate_session_id))}
+
+
+@pytest.mark.asyncio
+async def test_kb_get_list_all_unauthorized_when_auth_enabled(hmac_secret):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/kb")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_kb_get_authorized_with_session_token(hmac_secret):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/kb/ingest",
+            json={
+                "debate_session_id": "debate-abc",
+                "pro": {"id": "tweet-1", "text": "pro summary"},
+            },
+            headers=_session_bearer("debate-abc"),
+        )
+        response = await client.get(
+            "/kb",
+            params={"debate_session_id": "debate-abc"},
+            headers=_session_bearer("debate-abc"),
+        )
+
+    assert response.status_code == 200

@@ -10,12 +10,13 @@ from starlette.responses import JSONResponse, StreamingResponse
 from src.kb import kb_store
 from src.logging import get_logger
 from src.pipeline import parse_pipeline_mode
+from src.proxy_auth import unauthorized_response, verify_bearer
 from src.session import parse_session_scope
 from src.upstream import resolve_chat_upstream
 
 log = get_logger(__name__)
 
-_AGORA_ONLY_KEYS = frozenset({"turn_id", "timestamp", "context"})
+_AGORA_ONLY_KEYS = frozenset({"turn_id", "timestamp", "context", "interruptable"})
 
 
 def _build_upstream_payload(body: dict, model: str) -> dict:
@@ -76,6 +77,13 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     )
     if scope_error:
         return JSONResponse({"detail": scope_error}, status_code=400)
+
+    if not verify_bearer(
+        request.headers.get("authorization", ""),
+        debate_session_id=debate_session_id,
+        side=side,
+    ):
+        return unauthorized_response()
 
     provider = request.query_params.get("provider")
     model = request.query_params.get("model")

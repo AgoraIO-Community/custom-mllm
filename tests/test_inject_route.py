@@ -5,7 +5,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.main import app, session_manager
+from src.proxy_auth import derive_side_token, format_bearer
 from src.session import ProxySession, parse_session_scope
+from src.settings import settings
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +150,51 @@ def test_has_active_scope():
     _make_session("a", debate_session_id="room-1", side="pro")
     assert session_manager.has_active_scope("room-1", "pro") is True
     assert session_manager.has_active_scope("room-1", "con") is False
+
+
+@pytest.fixture
+def hmac_secret(monkeypatch):
+    monkeypatch.setattr(settings, "proxy_master_secret", "test-secret-for-cross-check")
+    yield
+
+
+def _side_bearer(debate_session_id: str, side: str) -> dict[str, str]:
+    return {"Authorization": format_bearer(derive_side_token(debate_session_id, side))}
+
+
+@pytest.mark.asyncio
+async def test_inject_unauthorized_without_bearer(hmac_secret):
+    _make_session("sess-1", debate_session_id="debate-abc", side="pro")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/inject/sess-1",
+            json={"text": "hello", "trigger_response": False},
+        )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_inject_authorized_with_side_token(hmac_secret):
+    _make_session("sess-1", debate_session_id="debate-abc", side="pro")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/inject/sess-1",
+            json={"text": "hello", "trigger_response": False},
+            headers=_side_bearer("debate-abc", "pro"),
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_inject_missing_session_unauthorized_with_hmac_only(hmac_secret):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/inject/missing", json={"text": "hello"})
+
+    assert response.status_code == 401

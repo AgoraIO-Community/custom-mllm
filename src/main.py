@@ -17,6 +17,7 @@ from src.kb_get import kb_get
 from src.kb_ingest import kb_ingest
 from src.logging import configure_logging, get_logger
 from src.pipeline import parse_pipeline_mode
+from src.proxy_auth import unauthorized_response, verify_bearer
 from src.relay import relay_loop
 from src.session import SessionManager, parse_session_scope
 from src.settings import settings
@@ -26,18 +27,6 @@ configure_logging()
 log = get_logger(__name__)
 
 session_manager = SessionManager()
-
-
-def _check_auth_header(auth_header: str) -> bool:
-    if not settings.proxy_auth_token:
-        return True
-    return auth_header == f"Bearer {settings.proxy_auth_token}"
-
-
-def _check_auth(request: Request) -> JSONResponse | None:
-    if _check_auth_header(request.headers.get("authorization", "")):
-        return None
-    return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
 
 def _session_payload(session) -> dict:
@@ -63,21 +52,32 @@ async def health(_: Request) -> JSONResponse:
 
 
 async def list_sessions(request: Request) -> JSONResponse:
-    if err := _check_auth(request):
-        return err
-
     debate_session_id = request.query_params.get("debate_session_id")
+    if not verify_bearer(
+        request.headers.get("authorization", ""),
+        debate_session_id=debate_session_id,
+    ):
+        return unauthorized_response()
+
     sessions = session_manager.list_active(debate_session_id=debate_session_id or None)
 
     return JSONResponse({"sessions": [_session_payload(session) for session in sessions]})
 
 
 async def inject_session(request: Request) -> JSONResponse:
-    if err := _check_auth(request):
-        return err
-
     session_id = request.path_params["session_id"]
     session = session_manager.get(session_id)
+
+    if session is not None:
+        if not verify_bearer(
+            request.headers.get("authorization", ""),
+            debate_session_id=session.debate_session_id,
+            side=session.side,
+        ):
+            return unauthorized_response()
+    elif not verify_bearer(request.headers.get("authorization", "")):
+        return unauthorized_response()
+
     if session is None:
         return JSONResponse({"detail": "Session not found"}, status_code=404)
 
@@ -126,10 +126,6 @@ async def inject_session(request: Request) -> JSONResponse:
 
 
 async def realtime_ws(websocket: WebSocket) -> None:
-    if not _check_auth_header(websocket.headers.get("authorization", "")):
-        await websocket.close(code=1008, reason="Unauthorized")
-        return
-
     pipeline_error = parse_pipeline_mode(websocket.query_params.get("pipeline_mode"), "mllm")
     if pipeline_error:
         await websocket.close(code=1008, reason=pipeline_error)
@@ -141,6 +137,14 @@ async def realtime_ws(websocket: WebSocket) -> None:
     )
     if scope_error:
         await websocket.close(code=1008, reason=scope_error)
+        return
+
+    if not verify_bearer(
+        websocket.headers.get("authorization", ""),
+        debate_session_id=debate_session_id,
+        side=side,
+    ):
+        await websocket.close(code=1008, reason="Unauthorized")
         return
 
     if debate_session_id and side and session_manager.has_active_scope(debate_session_id, side):

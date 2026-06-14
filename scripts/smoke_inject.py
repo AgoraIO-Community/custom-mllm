@@ -15,23 +15,22 @@ import websockets
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.proxy_auth import proxy_auth_headers  # noqa: E402
 from src.settings import settings  # noqa: E402
 
 PRO_TEXT = "[LIVE X - PRO] @user_pro: AI regulation will boost innovation."
 CON_TEXT = "[LIVE X - CON] @user_con: AI regulation will stifle startups."
 
 
-def _http_headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if settings.proxy_auth_token:
-        headers["Authorization"] = f"Bearer {settings.proxy_auth_token}"
-    return headers
+def _http_headers(debate_session_id: str, *, side: str | None = None) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        **proxy_auth_headers(debate_session_id=debate_session_id, side=side),
+    }
 
 
-def _ws_headers() -> dict[str, str]:
-    if settings.proxy_auth_token:
-        return {"Authorization": f"Bearer {settings.proxy_auth_token}"}
-    return {}
+def _ws_headers(debate_session_id: str, side: str) -> dict[str, str]:
+    return proxy_auth_headers(debate_session_id=debate_session_id, side=side)
 
 
 async def _hold_session(
@@ -45,7 +44,9 @@ async def _hold_session(
         f"?pipeline_mode=mllm&debate_session_id={debate_session_id}&side={side}"
         f"&provider=xai"
     )
-    async with websockets.connect(ws_url, additional_headers=_ws_headers()) as ws:
+    async with websockets.connect(
+        ws_url, additional_headers=_ws_headers(debate_session_id, side)
+    ) as ws:
         await ws.send(
             json.dumps(
                 {
@@ -79,7 +80,9 @@ async def _wait_for_sessions(
     timeout: float,
 ) -> list[dict]:
     deadline = asyncio.get_event_loop().time() + timeout
-    async with httpx.AsyncClient(base_url=http_base, headers=_http_headers()) as client:
+    async with httpx.AsyncClient(
+        base_url=http_base, headers=_http_headers(debate_session_id)
+    ) as client:
         while asyncio.get_event_loop().time() < deadline:
             response = await client.get(
                 "/sessions",
@@ -102,9 +105,14 @@ async def _inject(
     session_id: str,
     text: str,
     *,
+    debate_session_id: str,
+    side: str,
     trigger_response: bool,
 ) -> dict:
-    async with httpx.AsyncClient(base_url=http_base, headers=_http_headers()) as client:
+    async with httpx.AsyncClient(
+        base_url=http_base,
+        headers=_http_headers(debate_session_id, side=side),
+    ) as client:
         response = await client.post(
             f"/inject/{session_id}",
             json={"text": text, "trigger_response": trigger_response},
@@ -133,7 +141,9 @@ async def run(args: argparse.Namespace) -> int:
     print(f"Debate session: {debate_session_id}")
 
     try:
-        async with httpx.AsyncClient(base_url=http_base, headers=_http_headers()) as client:
+        async with httpx.AsyncClient(
+        base_url=http_base, headers=_http_headers(debate_session_id)
+    ) as client:
             health = await client.get("/health")
             health.raise_for_status()
             print(f"Health: {health.json()}")
@@ -147,7 +157,9 @@ async def run(args: argparse.Namespace) -> int:
             sessions = await _wait_for_sessions(http_base, debate_session_id, args.timeout)
         else:
             print("Using existing sessions (pass --spawn to create pro+con automatically) ...")
-            async with httpx.AsyncClient(base_url=http_base, headers=_http_headers()) as client:
+            async with httpx.AsyncClient(
+        base_url=http_base, headers=_http_headers(debate_session_id)
+    ) as client:
                 response = await client.get(
                     "/sessions",
                     params={"debate_session_id": debate_session_id},
@@ -178,12 +190,16 @@ async def run(args: argparse.Namespace) -> int:
             http_base,
             by_side["pro"]["session_id"],
             args.pro_text or PRO_TEXT,
+            debate_session_id=debate_session_id,
+            side="pro",
             trigger_response=args.trigger_response,
         )
         await _inject(
             http_base,
             by_side["con"]["session_id"],
             args.con_text or CON_TEXT,
+            debate_session_id=debate_session_id,
+            side="con",
             trigger_response=args.trigger_response,
         )
 

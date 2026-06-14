@@ -13,13 +13,16 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.proxy_auth import proxy_auth_headers  # noqa: E402
 from src.settings import settings  # noqa: E402
 
 
-def _http_headers() -> dict[str, str]:
+def _http_headers(debate_session_id: str | None = None) -> dict[str, str]:
     headers = {"Accept": "application/json"}
-    if settings.proxy_auth_token:
-        headers["Authorization"] = f"Bearer {settings.proxy_auth_token}"
+    if debate_session_id:
+        headers.update(proxy_auth_headers(debate_session_id=debate_session_id))
+    else:
+        headers.update(proxy_auth_headers())
     return headers
 
 
@@ -29,7 +32,7 @@ def main() -> int:
     parser.add_argument(
         "--debate-session-id",
         default=None,
-        help="Filter to one debate (e.g. debate-38dac621). Omit to list all debates.",
+        help="Filter to one debate (e.g. debate-38dac621). Required when PROXY_MASTER_SECRET is set.",
     )
     args = parser.parse_args()
 
@@ -38,7 +41,9 @@ def main() -> int:
         params["debate_session_id"] = args.debate_session_id
 
     url = f"http://{args.host}/kb"
-    response = httpx.get(url, params=params, headers=_http_headers(), timeout=30.0)
+    response = httpx.get(
+        url, params=params, headers=_http_headers(args.debate_session_id), timeout=30.0
+    )
     print(f"GET {response.request.url} -> {response.status_code}")
     try:
         print(json.dumps(response.json(), indent=2))

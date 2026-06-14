@@ -14,31 +14,56 @@ import websockets
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.proxy_auth import proxy_auth_headers  # noqa: E402
 from src.settings import settings  # noqa: E402
 
 
-def _build_headers(via_proxy: bool) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if via_proxy and settings.proxy_auth_token:
-        headers["Authorization"] = f"Bearer {settings.proxy_auth_token}"
-    elif not via_proxy:
-        headers["Authorization"] = f"Bearer {settings.xai_api_key}"
-    return headers
-
-
-def _resolve_url(via_proxy: bool, host: str, port: int) -> str:
+def _build_headers(
+    via_proxy: bool,
+    *,
+    debate_session_id: str,
+    side: str,
+) -> dict[str, str]:
     if via_proxy:
-        return f"ws://{host}:{port}/realtime?provider=xai"
+        return proxy_auth_headers(debate_session_id=debate_session_id, side=side)
+    return {"Authorization": f"Bearer {settings.xai_api_key}"}
+
+
+def _resolve_url(
+    via_proxy: bool,
+    host: str,
+    port: int,
+    *,
+    debate_session_id: str,
+    side: str,
+) -> str:
+    if via_proxy:
+        return (
+            f"ws://{host}:{port}/realtime"
+            f"?pipeline_mode=mllm&debate_session_id={debate_session_id}"
+            f"&side={side}&provider=xai"
+        )
     return settings.xai_upstream_url
 
 
-async def run_smoke_test(via_proxy: bool, host: str, port: int) -> int:
+async def run_smoke_test(
+    via_proxy: bool,
+    host: str,
+    port: int,
+    *,
+    debate_session_id: str,
+    side: str,
+) -> int:
     if not settings.xai_api_key:
         print("ERROR: XAI_API_KEY is not set in .env", file=sys.stderr)
         return 1
 
-    url = _resolve_url(via_proxy, host, port)
-    headers = _build_headers(via_proxy)
+    url = _resolve_url(
+        via_proxy, host, port, debate_session_id=debate_session_id, side=side
+    )
+    headers = _build_headers(
+        via_proxy, debate_session_id=debate_session_id, side=side
+    )
     mode = "proxy" if via_proxy else "direct"
 
     print(f"Connecting ({mode}) to {url} ...")
@@ -132,8 +157,27 @@ def main() -> int:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Proxy host (with --via-proxy)")
     parser.add_argument("--port", type=int, default=8081, help="Proxy port (with --via-proxy)")
+    parser.add_argument(
+        "--debate-session-id",
+        default="debate-smoke-test",
+        help="debate_session_id for proxy HMAC auth (with --via-proxy)",
+    )
+    parser.add_argument(
+        "--side",
+        default="pro",
+        choices=["pro", "con"],
+        help="Agent side for proxy HMAC auth (with --via-proxy)",
+    )
     args = parser.parse_args()
-    return asyncio.run(run_smoke_test(args.via_proxy, args.host, args.port))
+    return asyncio.run(
+        run_smoke_test(
+            args.via_proxy,
+            args.host,
+            args.port,
+            debate_session_id=args.debate_session_id,
+            side=args.side,
+        )
+    )
 
 
 if __name__ == "__main__":

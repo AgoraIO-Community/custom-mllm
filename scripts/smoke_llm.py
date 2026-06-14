@@ -13,17 +13,18 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.proxy_auth import proxy_auth_headers  # noqa: E402
 from src.settings import settings  # noqa: E402
 
 PRO_SUMMARY = "AI regulation will boost innovation and safety standards."
 CON_SUMMARY = "AI regulation will stifle startups and slow deployment."
 
 
-def _http_headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if settings.proxy_auth_token:
-        headers["Authorization"] = f"Bearer {settings.proxy_auth_token}"
-    return headers
+def _http_headers(debate_session_id: str) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        **proxy_auth_headers(debate_session_id=debate_session_id),
+    }
 
 
 def _chat_path(debate_session_id: str, side: str, provider: str, model: str) -> str:
@@ -44,7 +45,7 @@ async def run_smoke(
     provider: str,
     model: str,
 ) -> None:
-    async with httpx.AsyncClient(base_url=f"http://{base_url}", headers=_http_headers()) as client:
+    async with httpx.AsyncClient(base_url=f"http://{base_url}") as client:
         health = await client.get("/health")
         health.raise_for_status()
         print(f"health: {health.json()}")
@@ -56,11 +57,16 @@ async def run_smoke(
                 "pro": {"id": "smoke-tweet-pro", "text": PRO_SUMMARY},
                 "con": {"id": "smoke-tweet-con", "text": CON_SUMMARY},
             },
+            headers=_http_headers(debate_session_id),
         )
         ingest.raise_for_status()
         print(f"kb/ingest: {ingest.json()}")
 
-        kb_get = await client.get("/kb", params={"debate_session_id": debate_session_id})
+        kb_get = await client.get(
+            "/kb",
+            params={"debate_session_id": debate_session_id},
+            headers=proxy_auth_headers(debate_session_id=debate_session_id),
+        )
         kb_get.raise_for_status()
         kb_data = kb_get.json()
         print(f"kb GET: {kb_data}")
@@ -80,6 +86,10 @@ async def run_smoke(
                     "stream": True,
                     "turn_id": 0,
                     "timestamp": 1,
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    **proxy_auth_headers(debate_session_id=debate_session_id, side=side),
                 },
                 timeout=120.0,
             ) as response:

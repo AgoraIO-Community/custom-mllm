@@ -17,7 +17,7 @@ Both pipelines use **`pipeline_mode`** query routing (`mllm` vs `llm`), shared `
 | **Consumer** | Debate demo app (separate Next.js repo) |
 | **Audience** | Internal demo |
 | **Status** | MLLM + cascade LLM **confirmed working** (local + ngrok E2E) |
-| **Related docs** | [debate-architcture.md](./debate-architcture.md), [integration.md](./integration.md), [optional-llm-pipeline-plan.md](./optional-llm-pipeline-plan.md), [proxy_llm_phase_2_01af85fe.plan.md](./proxy_llm_phase_2_01af85fe.plan.md) |
+| **Related docs** | [debate-architcture.md](./debate-architcture.md), [integration.md](./integration.md), [debate_proxy_hmac_auth_7b5d3263.plan.md](./debate_proxy_hmac_auth_7b5d3263.plan.md), [optional-llm-pipeline-plan.md](./optional-llm-pipeline-plan.md), [proxy_llm_phase_2_01af85fe.plan.md](./proxy_llm_phase_2_01af85fe.plan.md) |
 
 ---
 
@@ -44,11 +44,11 @@ Agora's [`/think`](https://docs.agora.io/en/conversational-ai/rest-api/agent/thi
 7. **Pipeline routing** — `pipeline_mode=mllm` on `/realtime`; `pipeline_mode=llm` on chat completions
 8. **Structured logging** — WS relay, inject, kb ingest, chat completions events
 9. **Deployable** — Localhost + ngrok; Railway-ready
+10. **Per-debate HMAC auth** — `PROXY_MASTER_SECRET` on all routes except `GET /health` (see [spec.md](./spec.md) §7)
 
 ### Future (not implemented)
 
 - Redis persistence for KB (in-memory only today)
-- Auth on `/kb/*` and `/v1/chat/completions` (open for v1)
 - MCP / `x_search` tools on MLLM upstream
 - Gemini or other LLM providers in cascade mode
 - `model` query param on MLLM `/realtime` (today: env defaults only)
@@ -93,15 +93,17 @@ flowchart TB
 
 All routes on one host (e.g. `https://<proxy>`).
 
-| Method | Path | `pipeline_mode` | Caller | Purpose |
-|--------|------|-----------------|--------|---------|
-| `GET` | `/health` | — | Ops | Health + active MLLM session count |
-| `GET` | `/sessions` | — | Debate app | List MLLM sessions; filter by `debate_session_id` |
-| `POST` | `/inject/{session_id}` | — | Debate app | MLLM live X inject |
-| `WS` | `/realtime` | **`mllm`** required | Agora MLLM | Voice relay |
-| `POST` | `/kb/ingest` | — | Debate app | Store live X summaries (pro/con) |
-| `GET` | `/kb` | — | Debug / scripts | Read in-memory KB (`?debate_session_id=` or all) |
-| `POST` | `/v1/chat/completions` | **`llm`** required | Agora cascade | Chat gateway + KB injection + SSE |
+| Method | Path | `pipeline_mode` | Auth (when secret set) | Caller | Purpose |
+|--------|------|-----------------|------------------------|--------|---------|
+| `GET` | `/health` | — | None | Ops | Health + active MLLM session count |
+| `GET` | `/sessions` | — | Session token + `?debate_session_id=` | Debate app | List MLLM sessions |
+| `POST` | `/inject/{session_id}` | — | Side token (from session) | Debate app | MLLM live X inject |
+| `WS` | `/realtime` | **`mllm`** required | Side token (Agora `mllm.api_key`) | Agora MLLM | Voice relay |
+| `POST` | `/kb/ingest` | — | Session token (body `debate_session_id`) | Debate app | Store live X summaries (pro/con) |
+| `GET` | `/kb` | — | Session token + `?debate_session_id=` (list-all blocked) | Debug / scripts | Read in-memory KB |
+| `POST` | `/v1/chat/completions` | **`llm`** required | Side token (Agora `llm.api_key`) | Agora cascade | Chat gateway + KB injection + SSE |
+
+**Auth:** HMAC-SHA256 hex via `Authorization: Bearer <token>`. Shared secret `PROXY_MASTER_SECRET` on proxy and debate app. Empty secret → auth disabled (local dev only). Full contract: [spec.md](./spec.md) §7.
 
 ### Example URLs
 
@@ -146,7 +148,7 @@ https://<proxy>/v1/chat/completions?pipeline_mode=llm&debate_session_id=debate-a
 | MLLM model source | Env (`OPENAI_MODEL`, `XAI_MODEL`) | Realtime WS URL embeds model |
 | LLM model source | Query param (env fallback) | Per-agent routing from debate app `llm.url` |
 | KB storage | In-memory | v1; `# TODO: Redis` in code |
-| Auth | Optional `PROXY_AUTH_TOKEN` | MLLM inject + `/sessions`; KB/chat open in v1 |
+| Auth | `PROXY_MASTER_SECRET` HMAC per-debate | All routes except `/health` |
 | Providers | OpenAI + xAI | Match debate app cascade + MLLM config |
 
 ---
@@ -166,14 +168,32 @@ OPENAI_MODEL=gpt-realtime
 XAI_CHAT_MODEL=grok-4.3
 OPENAI_CHAT_MODEL=gpt-4o-mini
 
-PROXY_AUTH_TOKEN=      # Optional
+PROXY_MASTER_SECRET=   # Shared with Next.js — HMAC per-debate auth (empty = auth disabled)
 PORT=8081
 HOST=0.0.0.0
 LOG_LEVEL=info
 LOG_AUDIO=0
 ```
 
-Debate app env (consumer repo): `MLLM_PROXY_HTTP_URL`, `MLLM_PROXY_WS_URL` — see [integration.md](./integration.md).
+Debate app env (consumer repo): `MLLM_PROXY_HTTP_URL`, `MLLM_PROXY_WS_URL`, `PROXY_MASTER_SECRET` — see [integration.md](./integration.md).
+
+### Authentication (delivered)
+
+| Token | HMAC message | Used by |
+|-------|--------------|---------|
+| **Side** | `{debate_session_id}:{side}` | `WS /realtime`, `POST /v1/chat/completions`, `POST /inject/{id}` |
+| **Session** | `{debate_session_id}` | `POST /kb/ingest`, `GET /kb`, `GET /sessions` |
+
+- Agora receives side token via invite `llm.api_key` / `mllm.api_key` (sent as `Authorization: Bearer`)
+- Vendor keys (`XAI_API_KEY`, `OPENAI_API_KEY`) never leave the proxy
+- `GET /health` stays public for load balancers
+
+**Cross-language test vector** (`PROXY_MASTER_SECRET=test-secret-for-cross-check`):
+
+- `derive_side_token("debate-abc", "pro")` → `dc31be4b05899e6e5ef6e5d060036a5db6bbbe0f028ba6b4390e9b27d21bb7a6`
+- `derive_session_token("debate-abc")` → `a846a57a323925d0035f5d20e9ce1da2aeadbdd76e0e3363574f5193678948b7`
+
+Implementation: `src/proxy_auth.py`. Tests: `tests/test_proxy_auth.py`, route auth tests.
 
 ---
 
@@ -198,10 +218,19 @@ Debate app env (consumer repo): `MLLM_PROXY_HTTP_URL`, `MLLM_PROXY_WS_URL` — s
 - [x] Rejects chat without `pipeline_mode=llm` or `stream: false`
 - [x] Debate app E2E with live X → KB → agent (confirmed)
 
+### Auth (done)
+
+- [x] `PROXY_MASTER_SECRET` HMAC on all routes except `/health`
+- [x] Side token for Agora paths (`/realtime`, `/v1/chat/completions`, `/inject`)
+- [x] Session token for debate-app paths (`/kb/ingest`, `GET /kb`, `/sessions`)
+- [x] `GET /kb` without `debate_session_id` → 401 when auth enabled
+- [x] Cross-language HMAC test vector (Python + Next.js)
+- [x] Legacy static `PROXY_AUTH_TOKEN` / `MLLM_PROXY_AUTH_TOKEN` removed (HMAC-only)
+
 ### Ops
 
 - [x] `GET /health` returns 200
-- [x] `pytest` — 58+ tests passing
+- [x] `pytest` — 79+ tests passing
 - [x] ngrok local dev documented
 - [ ] Railway production deploy (optional)
 
@@ -222,6 +251,7 @@ custom-xAI-mllm/
 │   ├── kb_ingest.py         # POST /kb/ingest
 │   ├── kb_get.py            # GET /kb
 │   ├── chat_completions.py  # POST /v1/chat/completions SSE proxy
+│   ├── proxy_auth.py        # HMAC derive/verify (side + session tokens)
 │   ├── config_mapper.py     # Agora mllm → xAI session.update (reference)
 │   ├── settings.py
 │   └── logging.py
@@ -229,8 +259,9 @@ custom-xAI-mllm/
 │   ├── smoke_xai.py         # Direct xAI Realtime smoke
 │   ├── smoke_inject.py      # MLLM sessions + inject smoke
 │   ├── smoke_llm.py         # KB ingest + GET + chat completions smoke
-│   └── inspect_kb.py        # GET /kb CLI
-├── tests/                   # Unit + route tests (kb, chat, pipeline, inject, relay, …)
+│   ├── inspect_kb.py        # GET /kb CLI
+│   └── check_demo.py        # Live demo: sessions + KB monitor
+├── tests/                   # Unit + route tests (kb, chat, pipeline, inject, relay, proxy_auth, …)
 ├── docs/
 │   ├── prd.md               # This file
 │   ├── spec.md              # Implementation spec
@@ -264,6 +295,8 @@ Phase 1 (Next.js) complete per [optional-llm-pipeline-plan.md](./optional-llm-pi
 | Nested Agora `params` not forwarded to chat upstream | Log payload; flatten `params` if needed |
 | MLLM without `pipeline_mode=mllm` | WS rejected with 1008 |
 | ngrok URL changes | Update debate app env vars |
+| Leaked proxy URL | Set `PROXY_MASTER_SECRET`; require HMAC Bearer on all routes except `/health` |
+| WebSocket 403 / 1008 Unauthorized | Matching secret + side HMAC in invite `llm.api_key` / `mllm.api_key` |
 
 ---
 
@@ -278,5 +311,6 @@ Phase 1 (Next.js) complete per [optional-llm-pipeline-plan.md](./optional-llm-pi
 | KB selection | Latest by `ingested_at` per `(debate_session_id, side)` |
 | `pipeline_mode` | Required on `/realtime` (`mllm`) and `/v1/chat/completions` (`llm`) |
 | API keys | Server-side in proxy only |
+| Proxy auth | `PROXY_MASTER_SECRET` HMAC; side token for Agora; session token for KB/sessions |
 | Session ID (MLLM) | Proxy generates UUID; debate app discovers via `GET /sessions` |
 | Session ID (LLM KB) | `debate_session_id` from debate app (e.g. `debate-{sessionId}`) |

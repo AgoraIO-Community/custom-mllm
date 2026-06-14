@@ -85,7 +85,7 @@ Other routes (`/health`, `/sessions`, `/inject`, `/kb`, `/kb/ingest`) do not use
 
 ```
 wss://<proxy>/realtime?pipeline_mode=mllm&debate_session_id=<id>&side=pro|con&provider=openai|xai
-Optional: Authorization: Bearer <PROXY_AUTH_TOKEN>
+Optional: Authorization: Bearer <HMAC side or session token>
 ```
 
 | Query param | Required | Notes |
@@ -99,7 +99,7 @@ Optional: Authorization: Bearer <PROXY_AUTH_TOKEN>
 
 **Steps:**
 
-1. Validate auth if `PROXY_AUTH_TOKEN` set.
+1. Validate auth if `PROXY_MASTER_SECRET` set (see §7).
 2. Validate `pipeline_mode=mllm`.
 3. Parse `debate_session_id` + `side`; reject duplicate active scope.
 4. Generate proxy `session_id` (UUID).
@@ -198,7 +198,10 @@ POST /v1/chat/completions?pipeline_mode=llm&debate_session_id=debate-abc&side=pr
 
 ```
 GET /sessions?debate_session_id=debate-abc
+Authorization: Bearer <session_hmac>
 ```
+
+Auth: session token (§7). `debate_session_id` query param required when `PROXY_MASTER_SECRET` set.
 
 MLLM session discovery for inject targeting:
 
@@ -221,30 +224,55 @@ MLLM session discovery for inject targeting:
 ### 6.3 `POST /inject/{session_id}`
 
 See prd.md. Wired to upstream `conversation.item.create`.  
-`404` missing session; `409` upstream not ready.
+Auth: side token from session's `debate_session_id` + `side` (§7).  
+`404` missing session; `409` upstream not ready; `401` missing/invalid Bearer.
 
 ### 6.4 `POST /kb/ingest`
 
-See §5.1. No auth in v1.
+See §5.1. Auth: session token (§7). `401` if missing/invalid when `PROXY_MASTER_SECRET` set.
 
 ### 6.5 `GET /kb`
 
-See §5.2. No auth in v1.
+See §5.2. Auth: session token + required `debate_session_id` query param when auth enabled; list-all blocked. `401` without token or param.
 
 ### 6.6 `POST /v1/chat/completions`
 
-See §5.3. No auth in v1.
+See §5.3. Auth: side token (§7). `401` if missing/invalid when secret set.
 
 ---
 
 ## 7. Authentication
 
-| Hop | Mechanism | v1 status |
-|-----|-----------|-----------|
-| Agora → `/realtime` | Optional `PROXY_AUTH_TOKEN` Bearer | Supported |
-| Debate app → `/inject`, `/sessions` | Optional Bearer | Supported |
-| Debate app → `/kb/*`, chat | — | Open (auth planned later) |
-| Proxy → upstream | Provider API keys from env | Always |
+Per-debate HMAC auth via shared `PROXY_MASTER_SECRET` (same value on Next.js and proxy). Vendor keys (`XAI_API_KEY`, `OPENAI_API_KEY`) stay on the proxy only.
+
+| Item | Value |
+|------|--------|
+| Side token message | `{debate_session_id}:{side}` e.g. `debate-abc:pro` |
+| Session token message | `{debate_session_id}` only |
+| Algorithm | HMAC-SHA256, lowercase hex, UTF-8 |
+| Header | `Authorization: Bearer <token>` |
+| Dev | Empty `PROXY_MASTER_SECRET` → skip auth |
+
+**Cross-language test vector** (`PROXY_MASTER_SECRET=test-secret-for-cross-check`):
+
+- `derive_side_token("debate-abc", "pro")` → `dc31be4b05899e6e5ef6e5d060036a5db6bbbe0f028ba6b4390e9b27d21bb7a6`
+- `derive_session_token("debate-abc")` → `a846a57a323925d0035f5d20e9ce1da2aeadbdd76e0e3363574f5193678948b7`
+
+| Route | Token type |
+|-------|------------|
+| `WS /realtime` | Side (query `debate_session_id` + `side`) |
+| `POST /v1/chat/completions` | Side |
+| `POST /kb/ingest` | Session (body `debate_session_id`) |
+| `GET /kb` | Session; list-all blocked when auth enabled |
+| `GET /sessions` | Session (query `debate_session_id` required when HMAC-only) |
+| `POST /inject/{session_id}` | Side (from session record) |
+| `GET /health` | None (public) |
+
+| Hop | Mechanism |
+|-----|-----------|
+| Agora → proxy routes | HMAC side token via invite `llm.api_key` / `mllm.api_key` |
+| Debate app → `/kb/ingest`, `/sessions`, `/inject` | HMAC session or side token |
+| Proxy → upstream | Provider API keys from env always |
 
 ---
 
@@ -271,7 +299,7 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-realtime            # MLLM Realtime WS
 OPENAI_CHAT_MODEL=gpt-4o-mini        # Cascade LLM fallback
 
-PROXY_AUTH_TOKEN=
+PROXY_MASTER_SECRET=   # Shared with Next.js — HMAC per-debate auth (empty = auth disabled)
 PORT=8081
 HOST=0.0.0.0
 LOG_LEVEL=info
@@ -289,12 +317,15 @@ custom-xAI-mllm/
 │   ├── spec.md
 │   ├── integration.md
 │   ├── optional-llm-pipeline-plan.md
+│   ├── debate_proxy_hmac_auth_7b5d3263.plan.md
 │   └── proxy_llm_phase_2_01af85fe.plan.md
 ├── scripts/
 │   ├── smoke_xai.py
 │   ├── smoke_inject.py      # MLLM: sessions + inject
 │   ├── smoke_llm.py         # LLM: ingest + GET /kb + chat
-│   └── inspect_kb.py        # GET /kb CLI
+│   ├── inspect_kb.py        # GET /kb CLI
+│   ├── check_demo.py        # Live demo: sessions + KB monitor
+│   └── run_tests.py         # Test catalog runner
 ├── src/
 │   ├── main.py
 │   ├── session.py
@@ -306,6 +337,7 @@ custom-xAI-mllm/
 │   ├── kb_ingest.py
 │   ├── kb_get.py
 │   ├── chat_completions.py
+│   ├── proxy_auth.py        # HMAC derive/verify
 │   ├── config_mapper.py
 │   ├── settings.py
 │   └── logging.py
@@ -320,7 +352,9 @@ custom-xAI-mllm/
     ├── test_kb.py
     ├── test_kb_ingest_route.py
     ├── test_kb_get_route.py
-    └── test_chat_completions.py
+    ├── test_chat_completions.py
+    ├── test_proxy_auth.py
+    └── test_sessions_auth.py
 ```
 
 ---
@@ -377,7 +411,7 @@ httpx>=0.27.0
 
 | Test | Command / file |
 |------|----------------|
-| Unit + routes | `.venv/bin/pytest -q` (58+ tests) |
+| Unit + routes | `.venv/bin/pytest -q` (79+ tests) |
 | xAI direct | `python scripts/smoke_xai.py` |
 | MLLM inject | `python scripts/smoke_inject.py --spawn` |
 | LLM pipeline | `python scripts/smoke_llm.py --host 127.0.0.1:8081` |
@@ -397,6 +431,8 @@ httpx>=0.27.0
 | Inject to dead session | HTTP `404` |
 | Inject before upstream ready | HTTP `409` |
 | Invalid `debate_session_id` on KB | HTTP `400` |
+| Missing/invalid HMAC Bearer | HTTP `401` (HTTP routes); WS close `1008` (reported as HTTP `403` on handshake) |
+| `GET /kb` without `debate_session_id` when auth on | HTTP `401` |
 
 ---
 
@@ -418,6 +454,12 @@ httpx>=0.27.0
 - [x] Query `model` forwarded upstream
 - [x] Debate app live X → `kb_ingest` path confirmed
 
+### Auth
+
+- [x] `PROXY_MASTER_SECRET` HMAC on all routes except `/health`
+- [x] `src/proxy_auth.py` + `tests/test_proxy_auth.py` cross-language vector
+- [x] Route tests for 401/200 auth cases
+
 ### Ops
 
 - [x] `GET /health`
@@ -433,6 +475,5 @@ httpx>=0.27.0
 | `KnowledgeBase` backend | `kb.py` | Redis persistence |
 | `_build_upstream_payload` | `chat_completions.py` | Flatten Agora `params` object |
 | `resolve_upstream` | `upstream.py` | `model` query param for MLLM WS |
-| Auth middleware | `main.py` | Protect KB + chat routes |
 | `on_upstream_event` | `relay.py` | Queue inject until `response.done` |
 | `config_mapper` tools | `config_mapper.py` | MCP / x_search on MLLM |

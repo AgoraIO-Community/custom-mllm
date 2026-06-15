@@ -10,5 +10,6 @@ build/
 .mypy_cache/
 .ruff_cache/
 *.log
+logs/
 debate-architcture.md
 integration.md

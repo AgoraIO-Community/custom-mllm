@@ -225,7 +225,7 @@ python scripts/check_demo.py sessions --debate-session-id $DEBATE_ID --json
 
 ### Inspect KB — ingested live-X points (one shot)
 
-**LLM / cascade mode** stores tweets via `POST /kb/ingest`. This shows how many pro/con points are in memory and the latest text on each side:
+**LLM / cascade mode** stores tweets via `POST /kb/ingest`. Each agent turn injects the **full own-side thread** (not just latest). Monitor in-memory KB:
 
 ```bash
 python scripts/check_demo.py kb --debate-session-id $DEBATE_ID
@@ -283,6 +283,35 @@ Example output (`inspect_kb.py`):
 | Summary only (counts + latest) | `check_demo.py kb` |
 | **All pro + con points** | `inspect_kb.py` or `check_demo.py kb --json` |
 | Poll summary every 5s | `check_demo.py kb --watch 5` |
+| Validate ingest → injection → reply | Set `KB_AUDIT_LOG_DIR=logs`; open `logs/{debate_session_id}/pro.json` and `con.json` |
+
+### KB audit logs (pro + con, OpenAI request shape)
+
+Set in `.env`:
+
+```properties
+KB_INJECT_MAX_POINTS_PER_SIDE=30
+KB_AUDIT_LOG_DIR=logs
+```
+
+Writes pretty JSON per debate and side:
+
+- `logs/debate-abc/pro.json` — Mike (pro agent)
+- `logs/debate-abc/con.json` — Emma (con agent)
+
+Each file is a JSON array. Each `chat.completion` entry includes:
+
+- `request` — OpenAI Chat Completions body: `model`, `stream`, `messages` (`role` + `content` only)
+- `response.assistant_reply` — what the LLM generated (agent speech source)
+- `kb` — `point_count`, `point_ids`, `injected`
+- `turn_id`, `ts`
+
+Each `kb.ingest` entry records when a tweet landed in store.
+
+```bash
+python scripts/check_demo.py audit --debate-session-id $DEBATE_ID --tail 5
+# Open in editor: logs/$DEBATE_ID/pro.json and logs/$DEBATE_ID/con.json
+```
 
 ### Watch KB every 5 seconds (best for live demo)
 

@@ -44,3 +44,61 @@ def test_pro_and_con_are_isolated():
 def test_latest_returns_none_when_empty():
     kb = KnowledgeBase()
     assert kb.latest("debate-missing", "pro") is None
+
+
+def test_list_side_chronological_oldest_first():
+    kb = KnowledgeBase()
+    kb.ingest("debate-abc", "pro", "tweet-1", "first")
+    time.sleep(0.01)
+    kb.ingest("debate-abc", "pro", "tweet-2", "second")
+    points = kb.list_side_chronological("debate-abc", "pro")
+    assert [point.id for point in points] == ["tweet-1", "tweet-2"]
+
+
+def test_format_live_context_includes_framing_and_points():
+    kb = KnowledgeBase()
+    kb.ingest("debate-abc", "pro", "tweet-1", "alpha")
+    kb.ingest("debate-abc", "pro", "tweet-2", "beta")
+    context, points = kb.format_live_context("debate-abc", "pro")
+    assert context is not None
+    assert context.startswith("[LIVE CONTEXT - PRO]")
+    assert "Context:\n- alpha\n- beta" in context
+    assert "Co-host just said" not in context
+    assert [point.id for point in points] == ["tweet-1", "tweet-2"]
+
+
+def test_format_live_thread_delegates_to_live_context():
+    kb = KnowledgeBase()
+    kb.ingest("debate-abc", "pro", "tweet-1", "alpha")
+    thread, points = kb.format_live_thread("debate-abc", "pro")
+    context, context_points = kb.format_live_context("debate-abc", "pro")
+    assert thread == context
+    assert points == context_points
+
+
+def test_format_live_thread_own_side_only():
+    kb = KnowledgeBase()
+    kb.ingest("debate-abc", "pro", "tweet-1", "pro text")
+    kb.ingest("debate-abc", "con", "tweet-2", "con text")
+    thread, points = kb.format_live_context("debate-abc", "pro")
+    assert thread is not None
+    assert "con text" not in thread
+    assert len(points) == 1
+
+
+def test_format_live_thread_cap_keeps_newest():
+    kb = KnowledgeBase()
+    for index in range(5):
+        kb.ingest("debate-abc", "pro", f"tweet-{index}", f"point-{index}")
+        time.sleep(0.001)
+    thread, points = kb.format_live_thread("debate-abc", "pro", max_points=3)
+    assert [point.id for point in points] == ["tweet-2", "tweet-3", "tweet-4"]
+    assert "point-0" not in thread
+    assert "point-4" in thread
+
+
+def test_format_live_thread_empty_returns_none():
+    kb = KnowledgeBase()
+    thread, points = kb.format_live_context("debate-abc", "pro")
+    assert thread is None
+    assert points == []

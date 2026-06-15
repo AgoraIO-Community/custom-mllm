@@ -84,7 +84,8 @@ flowchart TB
 
 - **`debate_session_id`** + **`side`** key the in-memory KB (not proxy `session_id`)
 - Next.js pushes `{ pro?, con? }` summaries via `POST /kb/ingest`
-- Chat completions inject **latest** point per side as `[LIVE THREAD] {text}` system message
+- Chat completions inject **full own-side thread** (oldest→newest) as `[LIVE THREAD - PRO|CON]` system message on every turn
+- Optional audit logs (`KB_AUDIT_LOG_DIR` → `logs/{debate_session_id}/pro.json` and `con.json`) record ingest, OpenAI-shaped requests, and assistant replies
 - Agora `turn_id` / `timestamp` stripped before upstream (logging only)
 
 ---
@@ -213,7 +214,8 @@ Implementation: `src/proxy_auth.py`. Tests: `tests/test_proxy_auth.py`, route au
 - [x] `POST /kb/ingest` stores pro/con summaries per debate
 - [x] `GET /kb?debate_session_id=` returns stored points
 - [x] `POST /v1/chat/completions?pipeline_mode=llm&...` streams SSE to upstream
-- [x] Latest KB point injected as `[LIVE THREAD]` when present
+- [x] Full own-side KB thread injected as `[LIVE THREAD - PRO|CON]` when present
+- [x] Optional JSONL audit log for ingest + chat completion injection
 - [x] `provider` + `model` from query params forwarded upstream
 - [x] Rejects chat without `pipeline_mode=llm` or `stream: false`
 - [x] Debate app E2E with live X → KB → agent (confirmed)
@@ -248,6 +250,7 @@ custom-xAI-mllm/
 │   ├── upstream.py          # resolve_upstream (WS) + resolve_chat_upstream (HTTP)
 │   ├── pipeline.py          # pipeline_mode validation
 │   ├── kb.py                # In-memory KB store
+│   ├── kb_audit.py          # JSONL audit log (ingest + chat completion)
 │   ├── kb_ingest.py         # POST /kb/ingest
 │   ├── kb_get.py            # GET /kb
 │   ├── chat_completions.py  # POST /v1/chat/completions SSE proxy
@@ -308,7 +311,7 @@ Phase 1 (Next.js) complete per [optional-llm-pipeline-plan.md](./optional-llm-pi
 | MLLM inject | Fully wired (`conversation.item.create`; optional `response.create`) |
 | Cascade LLM providers | OpenAI + xAI only |
 | LLM model routing | Query params on `llm.url`; env chat models as fallback |
-| KB selection | Latest by `ingested_at` per `(debate_session_id, side)` |
+| KB selection | Full own-side thread per chat turn (chronological; cap `KB_INJECT_MAX_POINTS_PER_SIDE`) |
 | `pipeline_mode` | Required on `/realtime` (`mllm`) and `/v1/chat/completions` (`llm`) |
 | API keys | Server-side in proxy only |
 | Proxy auth | `PROXY_MASTER_SECRET` HMAC; side token for Agora; session token for KB/sessions |

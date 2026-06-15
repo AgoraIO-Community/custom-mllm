@@ -4,6 +4,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from src.kb import kb_store
+from src.kb_audit import audit_kb_ingest
 from src.logging import get_logger
 from src.proxy_auth import unauthorized_response, verify_bearer
 from src.session import parse_session_scope
@@ -57,6 +58,13 @@ async def kb_ingest(request: Request) -> JSONResponse:
             return result
         point_id, text = result
         kb_store.ingest(debate_session_id, "pro", point_id, text)
+        audit_kb_ingest(
+            debate_session_id,
+            "pro",
+            point_id,
+            text,
+            kb_store.side_point_count(debate_session_id, "pro"),
+        )
         stored_pro = True
 
     if "con" in body:
@@ -65,6 +73,13 @@ async def kb_ingest(request: Request) -> JSONResponse:
             return result
         point_id, text = result
         kb_store.ingest(debate_session_id, "con", point_id, text)
+        audit_kb_ingest(
+            debate_session_id,
+            "con",
+            point_id,
+            text,
+            kb_store.side_point_count(debate_session_id, "con"),
+        )
         stored_con = True
 
     if not stored_pro and not stored_con:

@@ -21,6 +21,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.kb_audit import audit_log_dir, audit_path_for_debate_side
 from src.proxy_auth import proxy_auth_headers  # noqa: E402
 from src.settings import settings  # noqa: E402
 
@@ -111,7 +112,65 @@ def print_kb_summary(debate_session_id: str, data: dict) -> None:
     else:
         print("  latest con: (none yet)")
 
-    print("  (LLM mode injects latest pro/con point per side on each turn)")
+    print("  (LLM mode injects full own-side thread on each chat turn)")
+
+
+def _load_audit_records(audit_file: Path) -> list[dict]:
+    if not audit_file.is_file():
+        return []
+    try:
+        records = json.loads(audit_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return records if isinstance(records, list) else []
+
+
+def print_audit_tail(debate_session_id: str, tail: int) -> int:
+    directory = audit_log_dir()
+    if not directory:
+        print("\n=== KB audit logs ===")
+        print("  KB_AUDIT_LOG_DIR is not set")
+        return 1
+
+    print(f"\n=== KB audit tail for {debate_session_id} (last {tail} per side) ===")
+    found_any = False
+
+    for side in ("pro", "con"):
+        audit_file = audit_path_for_debate_side(debate_session_id, side)
+        if audit_file is None:
+            continue
+        records = _load_audit_records(audit_file)
+        if not records:
+            print(f"  {side}: (no records in {audit_file})")
+            continue
+
+        found_any = True
+        print(f"\n  --- {side} ({audit_file}) ---")
+        for record in records[-tail:]:
+            event = record.get("event")
+            ts = record.get("ts")
+            if event == "kb.ingest":
+                print(
+                    f"  [{ts}] ingest id={record.get('point_id')} "
+                    f"count={record.get('side_point_count')} "
+                    f"text={_truncate(str(record.get('text', '')), 80)}"
+                )
+            elif event == "chat.completion":
+                request = record.get("request") or {}
+                response = record.get("response") or {}
+                kb = record.get("kb") or {}
+                reply = _truncate(str(response.get("assistant_reply", "")), 100)
+                msg_count = len(request.get("messages") or [])
+                print(
+                    f"  [{ts}] turn={record.get('turn_id')} "
+                    f"kb_points={kb.get('point_count')} "
+                    f"messages={msg_count} "
+                    f"reply={reply or '(empty)'}"
+                )
+
+    if not found_any:
+        print(f"  (no records yet under {directory}/{debate_session_id}/pro.json or con.json)")
+    return 0
 
 
 def cmd_sessions(host: str, debate_session_id: str, as_json: bool) -> int:
@@ -161,6 +220,10 @@ def cmd_kb(
         return 0
 
 
+def cmd_audit(debate_session_id: str, tail: int) -> int:
+    return print_audit_tail(debate_session_id, tail)
+
+
 def cmd_watch(host: str, debate_session_id: str, interval: int, as_json: bool) -> int:
     try:
         while True:
@@ -181,8 +244,8 @@ def main() -> int:
     )
     parser.add_argument(
         "command",
-        choices=["sessions", "kb", "watch"],
-        help="sessions=list pro/con WS UUIDs; kb=ingested points; watch=both on interval",
+        choices=["sessions", "kb", "watch", "audit"],
+        help="sessions=list pro/con WS UUIDs; kb=ingested points; audit=tail JSONL; watch=both on interval",
     )
     parser.add_argument(
         "--debate-session-id",
@@ -205,10 +268,19 @@ def main() -> int:
         help="Poll sessions+kb every N seconds (watch command only)",
     )
     parser.add_argument("--json", action="store_true", help="Print full JSON responses")
+    parser.add_argument(
+        "--tail",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Show last N audit records for debate (audit command only)",
+    )
     args = parser.parse_args()
 
     if args.command == "sessions":
         return cmd_sessions(args.host, args.debate_session_id, args.json)
+    if args.command == "audit":
+        return cmd_audit(args.debate_session_id, args.tail)
     if args.command == "kb":
         return cmd_kb(
             args.host,

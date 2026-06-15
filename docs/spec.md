@@ -143,6 +143,7 @@ Content-Type: application/json
 - `pro` and/or `con` optional per request; at least one required
 - Dedupe by `id` per side; update `text` + `ingested_at` on re-ingest
 - No cap; in-memory only (`# TODO: Redis` in `kb.py`)
+- When `KB_AUDIT_LOG_DIR` is set, append `kb.ingest` JSONL line per side stored
 
 **Response `200`:**
 ```json
@@ -159,6 +160,23 @@ GET /kb
 Returns pro/con point lists (newest first) with `id`, `text`, `ingested_at`.  
 CLI: `python scripts/inspect_kb.py --debate-session-id debate-abc`
 
+### 5.2.1 KB audit logs (optional)
+
+Set `KB_AUDIT_LOG_DIR=logs` (empty = disabled).
+
+Writes pretty JSON per debate and side:
+
+- `logs/{debate_session_id}/pro.json`
+- `logs/{debate_session_id}/con.json`
+
+**`kb.ingest`** — tweet stored: `point_id`, `text`, `side_point_count`
+
+**`chat.completion`** — after upstream stream completes:
+
+- `request` — OpenAI shape: `model`, `stream`, `messages` (role + content only)
+- `response.assistant_reply` — streamed LLM text for that turn
+- `kb` — `point_ids`, `point_count`, `injected`; plus `turn_id`, `provider`, `ts`
+
 ### 5.3 Chat completions (Agora → Proxy → upstream)
 
 ```
@@ -173,10 +191,11 @@ POST /v1/chat/completions?pipeline_mode=llm&debate_session_id=debate-abc&side=pr
 
 1. Validate query params + `pipeline_mode=llm`
 2. Extract `turn_id`, `timestamp` for logs only
-3. `kb_store.latest(debate_session_id, side)` → if found, prepend system message `[LIVE THREAD] {text}`
-4. Build upstream payload: strip `turn_id`, `timestamp`, `context`; set `model` from query param; force `stream: true`
-5. `resolve_chat_upstream(provider, model)` → HTTP chat API
-6. Stream SSE back to Agora; append `data: [DONE]\n\n` if upstream omits it
+3. `kb_store.format_live_thread(debate_session_id, side)` → if points exist, insert system message with full own-side thread immediately before the last `user` message (`[LIVE THREAD - PRO|CON]` bullet list, oldest→newest; capped by `KB_INJECT_MAX_POINTS_PER_SIDE`, `0` = unlimited; append if no `user` in history)
+4. Append audit record when `KB_AUDIT_LOG_DIR` is set (`chat.completion` with OpenAI `request` + `response.assistant_reply`)
+5. Build upstream payload: strip `turn_id`, `timestamp`, `context`; set `model` from query param; force `stream: true`
+6. `resolve_chat_upstream(provider, model)` → HTTP chat API
+7. Stream SSE back to Agora; append `data: [DONE]\n\n` if upstream omits it
 
 **Model resolution:** Query param `model` wins; `OPENAI_CHAT_MODEL` / `XAI_CHAT_MODEL` env vars are fallback (route requires query param today).
 
@@ -284,7 +303,7 @@ Per-debate HMAC auth via shared `PROXY_MASTER_SECRET` (same value on Next.js and
 
 **MLLM inject:** `inject.sent`
 
-**LLM:** `kb.ingest`, `chat_completions.request` (includes `kb_injected`, `turn_id`, `timestamp`)
+**LLM:** `kb.ingest`, `chat_completions.request` (includes `kb_injected`, `kb_point_count`, `kb_thread_chars`, `turn_id`, `timestamp`); optional JSONL audit via `KB_AUDIT_LOG_DIR`
 
 ---
 
@@ -304,6 +323,8 @@ PORT=8081
 HOST=0.0.0.0
 LOG_LEVEL=info
 LOG_AUDIO=0
+KB_INJECT_MAX_POINTS_PER_SIDE=30     # 0 = unlimited per side per chat turn
+KB_AUDIT_LOG_DIR=logs                # writes logs/{debate_session_id}/pro.json + con.json
 ```
 
 ---

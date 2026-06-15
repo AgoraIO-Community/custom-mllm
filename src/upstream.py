@@ -67,3 +67,30 @@ def resolve_chat_upstream(provider: str | None, model: str | None) -> UpstreamCo
         )
 
     raise ValueError(f"Unknown provider: {provider}")
+
+
+def is_openai_restricted_chat_model(model: str) -> bool:
+    """GPT-5 and reasoning models reject several standard chat params."""
+    normalized = model.lower()
+    if normalized.startswith("gpt-5"):
+        return True
+    if normalized.startswith(("o1", "o3", "o4")):
+        return True
+    return False
+
+
+def normalize_chat_completion_payload(payload: dict, model: str) -> dict:
+    if not is_openai_restricted_chat_model(model):
+        return payload
+
+    normalized = dict(payload)
+    if "max_tokens" in normalized:
+        if "max_completion_tokens" not in normalized:
+            normalized["max_completion_tokens"] = normalized["max_tokens"]
+        del normalized["max_tokens"]
+
+    temperature = normalized.get("temperature")
+    if temperature is not None and temperature != 1:
+        del normalized["temperature"]
+
+    return normalized

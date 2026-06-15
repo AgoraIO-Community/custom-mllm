@@ -15,13 +15,6 @@ from src.kb_audit import (
 from src.settings import settings
 
 
-@pytest.fixture(autouse=True)
-def clear_kb():
-    kb_store.clear()
-    yield
-    kb_store.clear()
-
-
 @pytest.fixture
 def audit_dir(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(settings, "kb_audit_log_dir", str(tmp_path))

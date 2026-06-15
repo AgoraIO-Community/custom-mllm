@@ -7,15 +7,8 @@ from src.proxy_auth import derive_session_token, format_bearer
 from src.settings import settings
 
 
-@pytest.fixture(autouse=True)
-def clear_kb():
-    kb_store.clear()
-    yield
-    kb_store.clear()
-
-
 @pytest.mark.asyncio
-async def test_kb_ingest_pro_only():
+async def test_kb_ingest_pro_only(kb_data_dir):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
@@ -31,6 +24,8 @@ async def test_kb_ingest_pro_only():
     assert data["ok"] is True
     assert data["stored"] == {"pro": True, "con": False}
     assert kb_store.latest("debate-abc", "pro").text == "pro summary"
+    side_file = kb_data_dir / "debate-abc" / "pro_live_tweets.txt"
+    assert side_file.read_text(encoding="utf-8") == "tweet-1 | pro summary\n"
 
 
 @pytest.mark.asyncio

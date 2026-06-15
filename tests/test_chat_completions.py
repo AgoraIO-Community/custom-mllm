@@ -5,22 +5,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.chat_completions import _build_upstream_payload, _inject_kb_messages
-from src.kb import kb_store, merge_user_turn_with_context, merge_user_turn_with_context
+from src.kb import kb_store, merge_user_turn_with_context
 from src.main import app
 from src.proxy_auth import derive_side_token, format_bearer
 from src.settings import settings
-
-
-@pytest.fixture(autouse=True)
-def clear_kb():
-    kb_store.clear()
-    yield
-    kb_store.clear()
-
-
-@pytest.fixture(autouse=True)
-def clear_auth(monkeypatch):
-    monkeypatch.setattr(settings, "proxy_master_secret", "")
 
 
 def _chat_url(**params: str) -> str:
@@ -245,6 +233,8 @@ async def test_chat_completions_forwards_kb_injection_to_upstream():
     assert "breaking news" in last_user
     assert "follow up" in last_user
     assert 'Co-host just said:\n"hi"' in last_user
+    assert "tweet-1" not in last_user
+    assert "tweet-2" not in last_user
     assert "turn_id" not in payload
     assert "timestamp" not in payload
     assert payload["model"] == "gpt-4o-mini"

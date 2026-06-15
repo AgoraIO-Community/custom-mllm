@@ -10,7 +10,7 @@
 Implementation spec for the **unified debate proxy** supporting:
 
 1. **MLLM** — WebSocket relay to OpenAI/xAI Realtime + HTTP inject for live X
-2. **Cascade LLM** — OpenAI-compatible chat completions gateway + in-memory KB for live X
+2. **Cascade LLM** — OpenAI-compatible chat completions gateway + filesystem KB for live X
 
 **Status:** Both pipelines confirmed working E2E with the debate Next.js app (ngrok + local proxy).
 
@@ -141,8 +141,8 @@ Content-Type: application/json
 ```
 
 - `pro` and/or `con` optional per request; at least one required
-- Dedupe by `id` per side; update `text` + `ingested_at` on re-ingest
-- No cap; in-memory only (`# TODO: Redis` in `kb.py`)
+- Dedupe by `id` per side; update `text` on re-ingest (`ingested_at` preserved)
+- Persisted under `KB_DATA_DIR` (default `knowledge_base/{debate_session_id}/pro_live_tweets.txt` and `con_live_tweets.txt`, one `{id} | {text}` line per tweet)
 - When `KB_AUDIT_LOG_DIR` is set, append `kb.ingest` JSONL line per side stored
 
 **Response `200`:**
@@ -191,7 +191,7 @@ POST /v1/chat/completions?pipeline_mode=llm&debate_session_id=debate-abc&side=pr
 
 1. Validate query params + `pipeline_mode=llm`
 2. Extract `turn_id`, `timestamp` for logs only
-3. `kb_store.format_live_thread(debate_session_id, side)` → if points exist, insert system message with full own-side thread immediately before the last `user` message (`[LIVE THREAD - PRO|CON]` bullet list, oldest→newest; capped by `KB_INJECT_MAX_POINTS_PER_SIDE`, `0` = unlimited; append if no `user` in history)
+3. `kb_store.format_live_context(debate_session_id, side)` → if points exist, merge `[LIVE CONTEXT - PRO|CON]` (text bullets only; tweet ids stripped) into the last `user` message; capped by `KB_INJECT_MAX_POINTS_PER_SIDE`, `0` = unlimited
 4. Append audit record when `KB_AUDIT_LOG_DIR` is set (`chat.completion` with OpenAI `request` + `response.assistant_reply`)
 5. Build upstream payload: strip `turn_id`, `timestamp`, `context`; set `model` from query param; force `stream: true`
 6. `resolve_chat_upstream(provider, model)` → HTTP chat API
@@ -323,6 +323,7 @@ PORT=8081
 HOST=0.0.0.0
 LOG_LEVEL=info
 LOG_AUDIO=0
+KB_DATA_DIR=knowledge_base          # knowledge_base/{debate_id}/pro_live_tweets.txt + con_live_tweets.txt
 KB_INJECT_MAX_POINTS_PER_SIDE=30     # 0 = unlimited per side per chat turn
 KB_AUDIT_LOG_DIR=logs                # writes logs/{debate_session_id}/pro.json + con.json
 ```
@@ -410,7 +411,7 @@ httpx>=0.27.0
 
 ### Milestone 5 — Cascade LLM Phase 2 (complete)
 
-- [x] `POST /kb/ingest` in-memory store
+- [x] `POST /kb/ingest` filesystem store (`KB_DATA_DIR`)
 - [x] `GET /kb` inspect endpoint
 - [x] `POST /v1/chat/completions` SSE proxy + KB injection
 - [x] `pipeline_mode=llm` guard
@@ -493,7 +494,7 @@ httpx>=0.27.0
 
 | Hook | Location | Planned use |
 |------|----------|-------------|
-| `KnowledgeBase` backend | `kb.py` | Redis persistence |
+| `KnowledgeBase` backend | `kb.py` | Filesystem under `KB_DATA_DIR` (Redis optional later) |
 | `_build_upstream_payload` | `chat_completions.py` | Flatten Agora `params` object |
 | `resolve_upstream` | `upstream.py` | `model` query param for MLLM WS |
 | `on_upstream_event` | `relay.py` | Queue inject until `response.done` |

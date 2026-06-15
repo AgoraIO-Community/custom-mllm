@@ -7,13 +7,6 @@ from src.proxy_auth import derive_session_token, format_bearer
 from src.settings import settings
 
 
-@pytest.fixture(autouse=True)
-def clear_kb():
-    kb_store.clear()
-    yield
-    kb_store.clear()
-
-
 @pytest.mark.asyncio
 async def test_kb_get_after_ingest():
     transport = ASGITransport(app=app)

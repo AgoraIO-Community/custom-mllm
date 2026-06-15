@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch in-memory KB state from the proxy (GET /kb)."""
+"""Fetch KB state from the proxy (GET /kb); backed by KB_DATA_DIR on disk."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _http_headers(debate_session_id: str | None = None) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Inspect in-memory KB via GET /kb")
+    parser = argparse.ArgumentParser(description="Inspect KB via GET /kb")
     parser.add_argument("--host", default=f"{settings.host}:{settings.port}")
     parser.add_argument(
         "--debate-session-id",

@@ -11,5 +11,6 @@ build/
 .ruff_cache/
 *.log
 logs/
+knowledge_base/
 debate-architcture.md
 integration.md

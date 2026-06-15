@@ -225,7 +225,7 @@ python scripts/check_demo.py sessions --debate-session-id $DEBATE_ID --json
 
 ### Inspect KB — ingested live-X points (one shot)
 
-**LLM / cascade mode** stores tweets via `POST /kb/ingest`. Each agent turn injects the **full own-side thread** (not just latest). Monitor in-memory KB:
+**LLM / cascade mode** stores tweets via `POST /kb/ingest` on disk under `knowledge_base/{debate_session_id}/`. Each agent turn injects the **own-side thread** (capped by `KB_INJECT_MAX_POINTS_PER_SIDE`) into the last user message as `[LIVE CONTEXT]`. Monitor KB:
 
 ```bash
 python scripts/check_demo.py kb --debate-session-id $DEBATE_ID
@@ -290,9 +290,15 @@ Example output (`inspect_kb.py`):
 Set in `.env`:
 
 ```properties
+KB_DATA_DIR=knowledge_base
 KB_INJECT_MAX_POINTS_PER_SIDE=30
 KB_AUDIT_LOG_DIR=logs
 ```
+
+Tweet summary files (`{tweet_id} | {text}` per line):
+
+- `knowledge_base/debate-abc/pro_live_tweets.txt`
+- `knowledge_base/debate-abc/con_live_tweets.txt`
 
 Writes pretty JSON per debate and side:
 
@@ -341,7 +347,7 @@ python scripts/check_demo.py kb --debate-session-id debate-4383d7ca --watch 5
 | `session_id` (pro) | `GET /sessions` → `side=pro` | MLLM `POST /inject/{session_id}` for pro agent |
 | `session_id` (con) | `GET /sessions` → `side=con` | MLLM `POST /inject/{session_id}` for con agent |
 
-KB is **in-memory only** — it clears when you restart uvicorn. Run these commands against the **same** proxy instance that is serving the live debate.
+KB is stored on disk under `KB_DATA_DIR` (default `knowledge_base/`) and **survives uvicorn restart**. Each debate has `pro_live_tweets.txt` and `con_live_tweets.txt` (`{tweet_id} | {summary}` per line). `GET /kb` reads the same files.
 
 ---
 

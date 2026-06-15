@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     log_level: str = "info"
     log_audio: bool = False
     kb_inject_max_points_per_side: int = 30
+    kb_data_dir: str = "knowledge_base"
     kb_audit_log_dir: str = ""
 
     @property

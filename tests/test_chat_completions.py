@@ -120,6 +120,9 @@ def test_inject_kb_messages_merges_into_last_user():
     assert "first summary" in injected[-1]["content"]
     assert "second summary" in injected[-1]["content"]
     assert 'Co-host just said:\n"hello"' in injected[-1]["content"]
+    assert injected[-1]["content"].index("Co-host just said") < injected[-1]["content"].index(
+        "[LIVE CONTEXT - PRO]"
+    )
     assert [point.id for point in points] == ["tweet-1", "tweet-2"]
 
 
@@ -233,6 +236,7 @@ async def test_chat_completions_forwards_kb_injection_to_upstream():
     assert "breaking news" in last_user
     assert "follow up" in last_user
     assert 'Co-host just said:\n"hi"' in last_user
+    assert last_user.index("Co-host just said") < last_user.index("[LIVE CONTEXT - PRO]")
     assert "tweet-1" not in last_user
     assert "tweet-2" not in last_user
     assert "turn_id" not in payload

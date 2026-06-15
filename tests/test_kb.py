@@ -1,7 +1,7 @@
 import time
 from pathlib import Path
 
-from src.kb import KnowledgeBase, _format_line, _parse_line
+from src.kb import KnowledgeBase, _format_line, _parse_line, merge_user_turn_with_context, sanitize_cohost_line
 
 
 def test_format_and_parse_line_round_trip():
@@ -86,7 +86,8 @@ def test_format_live_context_includes_framing_and_points(kb_data_dir: Path):
     context, points = kb.format_live_context("debate-abc", "pro")
     assert context is not None
     assert context.startswith("[LIVE CONTEXT - PRO]")
-    assert "Context:\n- alpha\n- beta" in context
+    assert "- alpha\n- beta" in context
+    assert "Timeline" in context
     assert "tweet-1" not in context
     assert "Co-host just said" not in context
     assert [point.id for point in points] == ["tweet-1", "tweet-2"]
@@ -134,3 +135,20 @@ def test_list_debates_scans_directories(kb_data_dir: Path):
     kb.ingest("debate-one", "pro", "tweet-1", "one")
     kb.ingest("debate-two", "con", "tweet-2", "two")
     assert kb.list_debates() == ["debate-one", "debate-two"]
+
+
+def test_merge_user_turn_puts_cohost_before_context():
+    merged = merge_user_turn_with_context("[LIVE CONTEXT - PRO]\nTimeline:\n- fact", "emma line")
+    assert merged.index("Co-host just said") < merged.index("[LIVE CONTEXT - PRO]")
+    assert '"emma line"' in merged
+
+
+def test_sanitize_cohost_line_filters_error_phrases():
+    assert sanitize_cohost_line("Sorry, I'm having trouble thinking.") == ""
+    assert sanitize_cohost_line("  real debate line  ") == "real debate line"
+
+
+def test_merge_user_turn_fallback_when_cohost_unclear():
+    merged = merge_user_turn_with_context("[LIVE CONTEXT - PRO]", "Sorry, I'm having trouble thinking.")
+    assert "unclear" in merged
+    assert "trouble thinking" not in merged

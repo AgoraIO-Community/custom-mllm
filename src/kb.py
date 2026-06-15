@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,11 @@ _SIDE_FILENAMES = {
     "pro": "pro_live_tweets.txt",
     "con": "con_live_tweets.txt",
 }
+
+_COHOST_ERROR_PATTERNS = re.compile(
+    r"having trouble thinking|trouble thinking|please try again|something went wrong",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -159,15 +165,17 @@ class KnowledgeBase:
         bullets = "\n".join(f"- {point.text}" for point in points)
         block = (
             f"{header}\n"
-            "Use ONLY the facts below from the live timeline for your side. "
-            "Paraphrase one as your own hot take in spoken English.\n"
+            "Reply like a live debate: answer your co-host first; use timeline facts only as ammunition.\n"
+            "STEP 1 — React directly to what co-host just said (their claim, not a new topic).\n"
+            "STEP 2 — Only if ONE bullet below sharpens that reply, weave it in as your own take.\n"
+            "STEP 3 — Skip bullets that do not answer their last line. Do not force a random fact.\n"
+            "Pick the bullet that best supports your reply to their LAST claim — not the newest by default.\n"
             "Do not read bullets aloud. Do not cite @handles or poster display names.\n"
             "Do not invent facts beyond this context.\n"
             "\n"
-            f"Context:\n{bullets}\n"
+            f"Timeline (use at most one that supports your reply to co-host):\n{bullets}\n"
             "\n"
-            "Reply to your co-host in 1-2 spoken sentences (~30 words): "
-            "one thread fact plus one sharp push-back."
+            "1-2 spoken sentences (~30 words). Plain English. No lists or headers."
         )
         return block, points
 
@@ -202,14 +210,32 @@ class KnowledgeBase:
             shutil.rmtree(root)
 
 
+def sanitize_cohost_line(line: str) -> str:
+    stripped = line.strip()
+    if not stripped or _COHOST_ERROR_PATTERNS.search(stripped):
+        return ""
+    return stripped
+
+
+def _cohost_section(cohost_line: str) -> str:
+    cleaned = sanitize_cohost_line(cohost_line)
+    if cleaned:
+        return f'Co-host just said:\n"{cleaned}"'
+    return (
+        "Co-host's last line was unclear. Address their most recent substantive point "
+        "from the conversation above — do not comment on audio or system errors."
+    )
+
+
 def merge_user_turn_with_context(context_block: str, cohost_line: str) -> str:
-    return f'{context_block}\n\nCo-host just said:\n"{cohost_line.strip()}"'
+    return f"{_cohost_section(cohost_line)}\n\n{context_block}"
 
 
 def merge_user_turn_without_cohost(context_block: str) -> str:
     return (
         f"{context_block}\n\n"
-        "Your co-host has not spoken yet. Give a short take using one context fact."
+        "Your co-host has not spoken yet. Give a short take on the topic; "
+        "use a timeline fact only if it fits naturally."
     )
 
 
